@@ -1,0 +1,403 @@
+// EnergyQualify AI — Prisma schema
+// Pilot data model for AI voice pre-qualification of energy sales prospects.
+// This schema is provided for future backend integration. The running demo
+// app uses an in-memory mock data layer (see src/lib/mock) so it works
+// without a live database.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ---------------------------------------------------------------------------
+// Enums
+// ---------------------------------------------------------------------------
+
+enum UserRole {
+  ADMIN
+  CAMPAIGN_MANAGER
+  CLOSER
+  VIEWER
+}
+
+enum CampaignStatus {
+  DRAFT
+  READY
+  RUNNING
+  PAUSED
+  COMPLETED
+  ARCHIVED
+}
+
+enum ContactStatus {
+  IMPORTED
+  READY_TO_CALL
+  CALLING
+  NO_ANSWER
+  CALLBACK_REQUESTED
+  NOT_INTERESTED
+  DISQUALIFIED_BRUSSELS
+  DISQUALIFIED_SOCIAL_TARIFF
+  INTERESTED_INCOMPLETE_DOSSIER
+  QUALIFIED_DOSSIER
+  DO_NOT_CONTACT
+  FAILED_CALL
+}
+
+enum CallStatus {
+  SCHEDULED
+  IN_PROGRESS
+  COMPLETED
+  NO_ANSWER
+  FAILED
+  VOICEMAIL
+}
+
+enum QualificationResult {
+  QUALIFIED
+  DISQUALIFIED_BRUSSELS
+  DISQUALIFIED_SOCIAL_TARIFF
+  NOT_INTERESTED
+  INCOMPLETE_DOSSIER
+  CALLBACK_REQUESTED
+  UNDETERMINED
+}
+
+enum DossierStatus {
+  NOUVEAU_DOSSIER
+  A_VERIFIER
+  A_RAPPELER
+  PRET_POUR_CLOSING
+  CONTRAT_ENVOYE
+  SIGNE
+  PERDU
+}
+
+enum VoiceProviderType {
+  MOCK
+  VAPI
+  TWILIO
+}
+
+enum InterestLevel {
+  INCONNU
+  FAIBLE
+  MOYEN
+  ELEVE
+}
+
+// ---------------------------------------------------------------------------
+// Core entities
+// ---------------------------------------------------------------------------
+
+model Workspace {
+  id        String   @id @default(cuid())
+  name      String
+  slug      String   @unique
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  users              User[]
+  campaigns          Campaign[]
+  contacts           Contact[]
+  contactImports     ContactImport[]
+  integrations       Integration[]
+  agentConfigs       AgentConfiguration[]
+  auditLogs          AuditLog[]
+  doNotContactRecord DoNotContactRecord[]
+
+  retentionDays Int @default(365)
+}
+
+model User {
+  id          String   @id @default(cuid())
+  workspaceId String
+  workspace   Workspace @relation(fields: [workspaceId], references: [id])
+
+  name      String
+  email     String   @unique
+  role      UserRole @default(VIEWER)
+  avatarUrl String?
+  createdAt DateTime @default(now())
+
+  assignedDossiers QualifiedDossier[] @relation("AssignedCloser")
+  auditLogs        AuditLog[]
+}
+
+model Campaign {
+  id          String         @id @default(cuid())
+  workspaceId String
+  workspace   Workspace      @relation(fields: [workspaceId], references: [id])
+
+  name           String
+  offer          String
+  targetSegment  String
+  status         CampaignStatus @default(DRAFT)
+  voiceProvider  VoiceProviderType @default(MOCK)
+  agentConfigId  String?
+  agentConfig    AgentConfiguration? @relation(fields: [agentConfigId], references: [id])
+
+  callHoursStart String  @default("09:00")
+  callHoursEnd   String  @default("20:00")
+  callDaysOfWeek Int[]   @default([1, 2, 3, 4, 5])
+
+  pilotSize    Int?
+  startedAt    DateTime?
+  pausedAt     DateTime?
+  completedAt  DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  contacts   Contact[]
+  calls      Call[]
+  dossiers   QualifiedDossier[]
+  callbacks  Callback[]
+  checklist  CampaignLaunchChecklist?
+}
+
+model CampaignLaunchChecklist {
+  id         String   @id @default(cuid())
+  campaignId String   @unique
+  campaign   Campaign @relation(fields: [campaignId], references: [id])
+
+  contactListReviewed    Boolean @default(false)
+  doNotContactApplied    Boolean @default(false)
+  callHoursConfigured    Boolean @default(false)
+  scriptReviewed         Boolean @default(false)
+  dataFieldsApproved     Boolean @default(false)
+  pilotScopeConfirmed    Boolean @default(false)
+}
+
+model ContactImport {
+  id          String   @id @default(cuid())
+  workspaceId String
+  workspace   Workspace @relation(fields: [workspaceId], references: [id])
+
+  fileName       String
+  totalRows      Int
+  validRows      Int
+  duplicateRows  Int
+  missingPhone   Int
+  brusselsRows   Int
+  invalidRows    Int
+  columnMapping  Json
+  createdAt      DateTime @default(now())
+
+  contacts Contact[]
+}
+
+model Contact {
+  id          String    @id @default(cuid())
+  workspaceId String
+  workspace   Workspace @relation(fields: [workspaceId], references: [id])
+
+  importId String?
+  import   ContactImport? @relation(fields: [importId], references: [id])
+
+  campaignId String?
+  campaign   Campaign? @relation(fields: [campaignId], references: [id])
+
+  civility   String?
+  firstName  String
+  lastName   String
+  address    String
+  postalCode String
+  city       String
+  phone      String
+  ageRange   String?
+  email      String?
+
+  dateOfBirth String?
+  eanCode     String?
+  supplier    String?
+
+  status        ContactStatus @default(IMPORTED)
+  interestLevel InterestLevel @default(INCONNU)
+  score         Int           @default(0)
+
+  isDuplicate      Boolean @default(false)
+  isBrusselsGuess  Boolean @default(false)
+
+  lastActivityAt DateTime?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  calls           Call[]
+  qualification   Qualification?
+  dossier         QualifiedDossier?
+  callbacks       Callback[]
+  doNotContact    DoNotContactRecord?
+  consentRecord   ConsentRecord?
+  notes           String?
+
+  @@index([workspaceId, status])
+  @@index([campaignId])
+}
+
+model Call {
+  id          String     @id @default(cuid())
+  contactId   String
+  contact     Contact    @relation(fields: [contactId], references: [id])
+  campaignId  String
+  campaign    Campaign   @relation(fields: [campaignId], references: [id])
+
+  provider       VoiceProviderType @default(MOCK)
+  externalCallId String?
+
+  status       CallStatus @default(SCHEDULED)
+  startedAt    DateTime?
+  endedAt      DateTime?
+  durationSec  Int?
+
+  transcript      String?
+  summary         String?
+  aiConfidence    Float?
+  detectedObjections String[]
+  recordingUrl    String?
+
+  assignedCloserId String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  qualification Qualification?
+
+  @@index([campaignId, status])
+}
+
+model Qualification {
+  id        String   @id @default(cuid())
+  contactId String   @unique
+  contact   Contact  @relation(fields: [contactId], references: [id])
+  callId    String?  @unique
+  call      Call?    @relation(fields: [callId], references: [id])
+
+  livesInBrussels     Boolean?
+  hasSocialTariff     Boolean?
+  isInterested        Boolean?
+  dossierComplete     Boolean @default(false)
+
+  result QualificationResult @default(UNDETERMINED)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model QualifiedDossier {
+  id         String   @id @default(cuid())
+  contactId  String   @unique
+  contact    Contact  @relation(fields: [contactId], references: [id])
+  campaignId String
+  campaign   Campaign @relation(fields: [campaignId], references: [id])
+
+  status              DossierStatus @default(NOUVEAU_DOSSIER)
+  completenessPercent  Int           @default(0)
+  assignedCloserId     String?
+  assignedCloser       User?         @relation("AssignedCloser", fields: [assignedCloserId], references: [id])
+
+  callSummary String?
+  internalNote String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  statusHistory DossierStatusEvent[]
+}
+
+model DossierStatusEvent {
+  id         String        @id @default(cuid())
+  dossierId  String
+  dossier    QualifiedDossier @relation(fields: [dossierId], references: [id])
+  status     DossierStatus
+  note       String?
+  createdAt  DateTime      @default(now())
+}
+
+model Callback {
+  id         String   @id @default(cuid())
+  contactId  String
+  contact    Contact  @relation(fields: [contactId], references: [id])
+  campaignId String
+  campaign   Campaign @relation(fields: [campaignId], references: [id])
+
+  scheduledAt DateTime
+  reason      String?
+  done        Boolean  @default(false)
+
+  createdAt DateTime @default(now())
+}
+
+model DoNotContactRecord {
+  id          String    @id @default(cuid())
+  workspaceId String
+  workspace   Workspace @relation(fields: [workspaceId], references: [id])
+  contactId   String    @unique
+  contact     Contact   @relation(fields: [contactId], references: [id])
+
+  reason    String
+  createdAt DateTime @default(now())
+  createdBy String?
+}
+
+model ConsentRecord {
+  id        String   @id @default(cuid())
+  contactId String   @unique
+  contact   Contact  @relation(fields: [contactId], references: [id])
+
+  consentGiven     Boolean  @default(false)
+  consentText      String
+  collectedAt      DateTime @default(now())
+  channel          String   @default("call_ai")
+}
+
+model AuditLog {
+  id          String   @id @default(cuid())
+  workspaceId String
+  workspace   Workspace @relation(fields: [workspaceId], references: [id])
+  userId      String?
+  user        User?    @relation(fields: [userId], references: [id])
+
+  action      String
+  entityType  String
+  entityId    String?
+  metadata    Json?
+  createdAt   DateTime @default(now())
+}
+
+model AgentConfiguration {
+  id          String   @id @default(cuid())
+  workspaceId String
+  workspace   Workspace @relation(fields: [workspaceId], references: [id])
+
+  name           String
+  language       String @default("fr-BE")
+  speakingStyle  String @default("professionnel")
+  openingMessage String
+  objectionHandling Json
+  requiredFields    String[]
+  escalationRules   Json?
+  complianceNotice  String
+  demoMode          Boolean @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  campaigns Campaign[]
+}
+
+model Integration {
+  id          String   @id @default(cuid())
+  workspaceId String
+  workspace   Workspace @relation(fields: [workspaceId], references: [id])
+
+  type      String // vapi | twilio | openai | google_calendar | crm | webhook
+  name      String
+  config    Json
+  enabled   Boolean  @default(false)
+  createdAt DateTime @default(now())
+}
